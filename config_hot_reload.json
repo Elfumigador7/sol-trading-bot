@@ -1,0 +1,13 @@
+{
+    "watch_folder": "models/",
+    "file_pattern": "*.onnx",
+    "check_interval_seconds": 5,
+    
+    "actions": {
+        "on_new_model": "reload_in_memory",
+        "on_error": "log_and_continue"
+    },
+    
+    "backup_old_models": true,
+    "max_backups": 3
+}

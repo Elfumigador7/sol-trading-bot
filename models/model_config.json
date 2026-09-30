@@ -1,0 +1,30 @@
+{
+    "model_name": "solana_trading_v1",
+    "version": "1.0.0",
+    "created_at": "2026-09-30T00:00:00Z",
+    
+    "features": [
+        "rsi_14",
+        "macd",
+        "volume_ma_20",
+        "price_change_1h",
+        "volatility_5m"
+    ],
+    
+    "thresholds": {
+        "buy_probability_min": 0.60,
+        "sell_probability_min": 0.60,
+        "max_position_size_sol": 10.0,
+        "stop_loss_pct": 2.0,
+        "take_profit_1_pct": 3.0,
+        "take_profit_2_pct": 5.0,
+        "take_profit_3_pct": 8.0
+    },
+    
+    "hyperparameters": {
+        "learning_rate": 0.01,
+        "n_estimators": 100,
+        "max_depth": 6,
+        "min_samples_split": 10
+    }
+}

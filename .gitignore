@@ -1,0 +1,29 @@
+# --- Secretos: NUNCA al repositorio ---
+.env
+connect_pi.sh
+connect_pi_automatico.sh
+
+# --- Entorno y cachés ---
+venv/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# --- Datos generados (se vuelven a descargar / generar) ---
+research/data/
+research/results/
+data/
+models/*.onnx
+models/*.bak
+models/model_metadata.json
+
+# --- Estado del sistema en ejecución ---
+backups/
+reports/
+logs/
+*.log
+nohup.out
+
+# --- Copias de trabajo ---
+*.bak
+*.bak2
