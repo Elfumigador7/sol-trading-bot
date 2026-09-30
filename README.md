@@ -1,5 +1,8 @@
 # 🚀 Sistema de Trading Automatizado - Solana/Hyperliquid
 
+> **📌 Estado actual (30-sep-2026):** este README describe la idea original. Cómo funciona hoy el sistema: [`docs/ESTADO_BOT.md`](docs/ESTADO_BOT.md). Historia completa (Jupyter, ONNX, qué falló y cómo se llegó aquí): [`docs/HISTORIA.md`](docs/HISTORIA.md).
+
+
 ## 🏗️ Arquitectura Dual
 
 ```
