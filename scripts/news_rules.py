@@ -34,12 +34,31 @@ RISK_PATTERN = re.compile(
     r'depeg(s|ged)?|rug ?pull|ponzi|fraud)\b',
     re.IGNORECASE)
 
+# MACRO: noticias que mueven todo el mercado (Fed, tipos, inflación, empleo…). Se registran para usarlas
+# como features de mercado (no activan el freno, que es solo para eventos graves de una moneda).
+MACRO_SOURCES = {'fed_press', 'fed_monetary', 'fed_speeches', 'bls_cpi'}
+MACRO_PATTERN = re.compile(
+    r'\b(fed|federal reserve|fomc|powell|interest rates?|rate (cut|hike)s?|basis points?|monetary policy|'
+    r'inflation|cpi|pce|jobs report|nonfarm|payrolls|unemployment|treasur(y|ies)|yields?|tariffs?|'
+    r'recession|gdp)\b', re.IGNORECASE)
+FOMC_PATTERN = re.compile(r'\b(fomc|rate decision|federal open market committee)\b', re.IGNORECASE)
+
 ALERT_WINDOW_H = 72
 MAX_COINS_IN_TITLE = 2
 
 
 def coins_in(text: str) -> list[str]:
     return [coin for coin, rx in _COIN_RES.items() if rx.search(text or '')]
+
+
+def topics_in(title: str, source: str = '') -> list[str]:
+    """Etiquetas de tema: 'macro' (Fed, inflación, empleo…) y 'fomc' (decisiones de tipos)."""
+    topics = []
+    if source in MACRO_SOURCES or MACRO_PATTERN.search(title or ''):
+        topics.append('macro')
+    if FOMC_PATTERN.search(title or ''):
+        topics.append('fomc')
+    return topics
 
 
 def alert_coins(title: str) -> list[str]:

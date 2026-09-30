@@ -105,6 +105,10 @@ demanda, delisting, insolvencia…) y que el titular mencione **como máximo 2 m
 conocidos y aceptados (p. ej. el primero: "…after the Kelp Hack, Chainlink lets institutions…" excluyó LINK).
 Se evalúa comparando `rotacion_top3_noticias` con `rotacion_top3` tras varios meses.
 Sentimiento de cada titular: VADER + léxico cripto (columna `sentiment`), para usarlo como feature.
+**Macro (desde 2026-09-30):** comunicados, decisiones del FOMC y discursos de la Reserva Federal, IPC (BLS)
+y economía (CNBC). Etiqueta `topics` = `macro` / `fomc`; no activan el freno, entran en el
+autoentrenamiento como features de mercado (`macro_sent_3d`, `fomc_3d`) cuando haya ≥ 90 días.
+Limitación conocida: el léxico puntúa mal el lenguaje institucional (p. ej. un comunicado neutro −0,68).
 
 ### Autoentrenamiento mensual (`scripts/monthly_research.py`, día 1 a las 05:00)
 Reentrena con todos los datos un **meta-modelo** (López de Prado) que decide si fiarse de cada elección

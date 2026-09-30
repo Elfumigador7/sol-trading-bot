@@ -64,6 +64,8 @@ async def news_features() -> tuple[pd.DataFrame | None, int]:
     conn = await asyncpg.connect(**DB_CONFIG)
     rows = await conn.fetch("SELECT published, coins, alerts, sentiment FROM news_headlines "
                             "WHERE coins <> '' AND published >= (SELECT min(collected) FROM news_headlines)")
+    macro_rows = await conn.fetch("SELECT published, topics, sentiment FROM news_headlines "
+                                  "WHERE topics LIKE '%macro%' AND published >= (SELECT min(collected) FROM news_headlines)")
     # Historial = desde que empezamos a RECOGER (algunas fuentes publican artículos antiguos)
     first = await conn.fetchval("SELECT min(collected) FROM news_headlines")
     await conn.close()
@@ -85,7 +87,17 @@ async def news_features() -> tuple[pd.DataFrame | None, int]:
                              'alerts_3d': d['alert'].rolling(3).sum().shift(1)})
         roll['coin'] = coin
         out.append(roll)
-    nf = pd.concat(out).reset_index(names='day').set_index(['day', 'coin'])
+    nf = pd.concat(out).reset_index(names='day')
+    # Macro (Fed, inflación, empleo…): mismo valor para todas las monedas de un día
+    m = pd.DataFrame([(pd.Timestamp(r['published']).floor('D'), r['sentiment'] or 0.0, float('fomc' in (r['topics'] or '')))
+                      for r in macro_rows], columns=['day', 'sent', 'fomc'])
+    if len(m):
+        md = m.groupby('day').agg(sent=('sent', 'mean'), fomc=('fomc', 'sum'))
+        md = md.reindex(pd.date_range(md.index.min(), pd.Timestamp.now(tz='UTC').floor('D'), freq='D')).fillna(0)
+        macro = pd.DataFrame({'macro_sent_3d': md['sent'].rolling(3).mean().shift(1),
+                              'fomc_3d': md['fomc'].rolling(3).sum().shift(1)})
+        nf = nf.merge(macro, left_on='day', right_index=True, how='left')
+    nf = nf.set_index(['day', 'coin'])
     return nf, days
 
 

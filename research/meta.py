@@ -18,7 +18,7 @@ from portfolio import btc_regime, simulate, top_momentum
 FIRST_TEST = pd.Timestamp('2021-07-01', tz='UTC')   # antes no hay historial suficiente para entrenar
 FEATURES = ['ret_1d', 'ret_7d', 'ret_14d', 'ret_28d', 'dist_ema20', 'dist_ema50', 'vol_ratio',
             'mom_rank', 'btc_ret_7d', 'btc_dist_ema50', 'funding_z', 'dow_sin', 'dow_cos']
-NEWS_FEATURES = ['sent_3d', 'alerts_3d']
+NEWS_FEATURES = ['sent_3d', 'alerts_3d', 'macro_sent_3d', 'fomc_3d']
 
 
 def rotation_weights(close: pd.DataFrame) -> pd.DataFrame:
@@ -72,7 +72,7 @@ def build_dataset(close: pd.DataFrame, funding_last: pd.DataFrame, news: pd.Data
     ds['dow_cos'] = np.cos(2 * np.pi * ds.index.dayofweek / 7)
     if news is not None:  # sentimiento medio y alertas de los 3 días previos, por moneda
         ds = ds.join(news, on=[ds.index.rename('day'), 'coin'], how='left')
-        ds[NEWS_FEATURES] = ds[NEWS_FEATURES].fillna({'sent_3d': 0.0, 'alerts_3d': 0.0})
+        ds[NEWS_FEATURES] = ds[NEWS_FEATURES].fillna(0.0)
     ds['y'] = (ds['next_ret'] > 0).astype(float).where(ds['next_ret'].notna())
     return ds
 

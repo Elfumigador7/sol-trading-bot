@@ -91,6 +91,13 @@ async def collect() -> dict:
                   for r in await conn.fetch("SELECT published, alerts, title, sentiment FROM news_headlines "
                                             "WHERE alerts <> '' AND published > now() - interval '7 days' "
                                             "ORDER BY published DESC LIMIT 15")]
+    macro = []
+    if await conn.fetchval("SELECT to_regclass('news_headlines') IS NOT NULL"):
+        macro = [dict(when=f"{r['published']:%m-%d %H:%M}", source=r['source'], title=r['title'],
+                      fomc='fomc' in (r['topics'] or ''), sent=r['sentiment'])
+                 for r in await conn.fetch("SELECT published, source, title, topics, sentiment FROM news_headlines "
+                                           "WHERE topics LIKE '%macro%' AND published > now() - interval '48 hours' "
+                                           "ORDER BY published DESC LIMIT 12")]
     if await conn.fetchval("SELECT to_regclass('hl_snapshots') IS NOT NULL"):
         snapshot = [dict(coin=r['coin'], px=r['mid_px'], funding_apr=(r['funding'] or 0) * 24 * 365,
                          oi_usd=(r['open_interest'] or 0) * (r['mid_px'] or 0), vol=r['day_volume_usd'],
@@ -109,7 +116,7 @@ async def collect() -> dict:
         'reports': sorted(p.name for p in (ROOT / 'reports').glob('investigacion_*.md')),
     }
     return {'generated': f"{now:%Y-%m-%d %H:%M} UTC", 'health': health, 'days': days, 'series': series,
-            'table': table, 'news': news_daily, 'alerts': alerts, 'market': snapshot, 'research': research,
+            'table': table, 'news': news_daily, 'alerts': alerts, 'macro': macro, 'market': snapshot, 'research': research,
             'order': ACCOUNT_ORDER, 'light': LIGHT, 'dark': DARK, 'labels': LABELS}
 
 
@@ -201,6 +208,12 @@ a { color: inherit; }
   </div>
 
   <section class="card">
+    <h2>Macro: Fed, inflación y economía (48 h)</h2>
+    <p class="sub">Se registran para el autoentrenamiento (no activan el freno de noticias) · FOMC = decisión de tipos</p>
+    <ul class="news" id="macro"></ul>
+  </section>
+
+  <section class="card">
     <h2>Mercado en Hyperliquid</h2>
     <p class="sub">Última foto (cada 5 min): funding anualizado, open interest, spread y liquidez a ±0,5 % del precio</p>
     <div class="scroll"><table id="market"></table></div>
@@ -281,6 +294,9 @@ new Chart(document.getElementById('sentiment'), {type: 'line',
 document.getElementById('alerts').innerHTML = D.alerts.length ? D.alerts.map(a =>
   `<li><span class="muted">${a.when}</span> · <b>${esc(a.coins)}</b> · ${esc(a.title)}</li>`).join('') : '<li class="muted">ninguna</li>';
 
+document.getElementById('macro').innerHTML = D.macro.length ? D.macro.map(m =>
+  `<li><span class="muted">${m.when} · ${esc(m.source)}</span>${m.fomc ? ' · <b>FOMC</b>' : ''} · ${esc(m.title)}</li>`).join('')
+  : '<li class="muted">ninguna</li>';
 document.getElementById('market').innerHTML =
   `<tr><th>Moneda</th><th class="num">Precio</th><th class="num">Funding anual</th><th class="num">Open interest</th>
    <th class="num">Volumen 24 h</th><th class="num">Spread</th><th class="num">Liquidez ±0,5 %</th></tr>` +

@@ -21,7 +21,7 @@ import asyncpg
 import requests
 from dotenv import load_dotenv
 
-from news_rules import alert_coins, coins_in, sentiment
+from news_rules import alert_coins, coins_in, sentiment, topics_in
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -38,6 +38,12 @@ FEEDS = {
     'blockworks': 'https://blockworks.co/feed',
     'solana_news': 'https://solana.com/news/rss.xml',
     'reddit_solana': 'https://www.reddit.com/r/solana/.rss',   # Atom
+    # Macro: Reserva Federal, inflación y economía de EE.UU.
+    'fed_press': 'https://www.federalreserve.gov/feeds/press_all.xml',
+    'fed_monetary': 'https://www.federalreserve.gov/feeds/press_monetary.xml',
+    'fed_speeches': 'https://www.federalreserve.gov/feeds/speeches.xml',
+    'bls_cpi': 'https://www.bls.gov/feed/cpi.rss',
+    'cnbc_economy': 'https://www.cnbc.com/id/20910258/device/rss/rss.html',
 }
 ATOM = '{http://www.w3.org/2005/Atom}'
 DB_CONFIG = {
@@ -74,7 +80,7 @@ def fetch_feed(source: str, url: str) -> list[tuple]:
             continue
         coins = coins_in(f"{title} {desc}")
         rows.append((published, source, title, desc, link, 'SOL' in coins, ','.join(coins),
-                     ','.join(alert_coins(title))))
+                     ','.join(alert_coins(title)), ','.join(topics_in(title, source))))
     return rows
 
 
@@ -95,13 +101,14 @@ async def main():
     """)
     await conn.execute("ALTER TABLE news_headlines ADD COLUMN IF NOT EXISTS coins TEXT")   # monedas mencionadas
     await conn.execute("ALTER TABLE news_headlines ADD COLUMN IF NOT EXISTS alerts TEXT")  # alertas de evento grave
+    await conn.execute("ALTER TABLE news_headlines ADD COLUMN IF NOT EXISTS topics TEXT")  # macro, fomc
     total = 0
     for source, url in FEEDS.items():
         try:
             rows = fetch_feed(source, url)
             result = await conn.executemany("""
-                INSERT INTO news_headlines (published, source, title, summary, link, mentions_sol, coins, alerts)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT (link) DO NOTHING
+                INSERT INTO news_headlines (published, source, title, summary, link, mentions_sol, coins, alerts, topics)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) ON CONFLICT (link) DO NOTHING
             """, rows)
             total += len(rows)
         except Exception as e:
@@ -112,6 +119,10 @@ async def main():
         await conn.executemany("UPDATE news_headlines SET coins = $2, alerts = $3, mentions_sol = $4 WHERE id = $1", [
             (r['id'], ','.join(coins_in(f"{r['title']} {r['summary']}")), ','.join(alert_coins(r['title'])),
              'SOL' in coins_in(f"{r['title']} {r['summary']}")) for r in old])
+    untopiced = await conn.fetch("SELECT id, title, source FROM news_headlines WHERE topics IS NULL")
+    if untopiced:
+        await conn.executemany("UPDATE news_headlines SET topics = $2 WHERE id = $1",
+                               [(r['id'], ','.join(topics_in(r['title'], r['source']))) for r in untopiced])
     # Sentimiento de los titulares aún sin puntuar (VADER + léxico cripto)
     unscored = await conn.fetch("SELECT id, title FROM news_headlines WHERE sentiment IS NULL")
     if unscored:

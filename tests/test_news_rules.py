@@ -24,3 +24,10 @@ def test_coin_tagging_uses_tickers():
 def test_sentiment_has_crypto_vocabulary():
     assert sentiment("Bitcoin surges to record high as ETF inflows soar") > 0.5
     assert sentiment("Solana network suffers outage, block production halted") < -0.5
+
+
+def test_macro_topics():
+    from news_rules import topics_in
+    assert topics_in("Federal Reserve issues FOMC statement", "fed_monetary") == ["macro", "fomc"]
+    assert topics_in("Bitcoin jumps on cool PCE inflation data") == ["macro"]
+    assert topics_in("Solana hackathon winners announced") == []
