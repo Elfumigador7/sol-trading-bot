@@ -26,4 +26,9 @@ nohup.out
 
 # --- Copias de trabajo ---
 *.bak
-*.bak2
+*.bak*
+
+# Estado del autoentrenamiento (vive en la Pi; se incluye en backups/)
+models/challenger.json
+models/challenger.pkl
+models/research_trials.json

@@ -13,4 +13,7 @@ else
     echo "$(date -u '+%F %T') ❌ falló la copia"
     exit 1
 fi
+# Estado del autoentrenamiento: el registro de pruebas mantiene honesto el Deflated Sharpe
+tar -czf "backups/models_$(date -u +%Y%m%d).tar.gz" models/*.json models/*.pkl 2>/dev/null
 ls -1t backups/db_*.sql.gz | tail -n +15 | xargs -r rm --
+ls -1t backups/models_*.tar.gz 2>/dev/null | tail -n +15 | xargs -r rm --

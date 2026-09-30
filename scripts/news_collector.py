@@ -21,6 +21,8 @@ import asyncpg
 import requests
 from dotenv import load_dotenv
 
+from news_rules import alert_coins, coins_in, sentiment
+
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -38,10 +40,6 @@ FEEDS = {
     'reddit_solana': 'https://www.reddit.com/r/solana/.rss',   # Atom
 }
 ATOM = '{http://www.w3.org/2005/Atom}'
-COIN_PATTERN = re.compile(r'\b(bitcoin|btc|ethereum|eth|bnb|xrp|ripple|cardano|ada|dogecoin|doge|'
-                          r'polkadot|litecoin|ltc|avalanche|avax|chainlink|solana|sol)\b', re.IGNORECASE)
-SOL_PATTERN = re.compile(r'\b(solana|sol)\b', re.IGNORECASE)
-
 DB_CONFIG = {
     'host': os.getenv('DB_HOST', 'localhost'),
     'port': int(os.getenv('DB_PORT', 5432)),
@@ -74,9 +72,9 @@ def fetch_feed(source: str, url: str) -> list[tuple]:
         title, link, desc = (title or '').strip(), (link or '').strip(), _clean(desc)
         if not title or not link or published is None:
             continue
-        text = f"{title} {desc}"
-        coins = sorted({m.lower() for m in COIN_PATTERN.findall(text)})
-        rows.append((published, source, title, desc, link, bool(SOL_PATTERN.search(text)), ','.join(coins)))
+        coins = coins_in(f"{title} {desc}")
+        rows.append((published, source, title, desc, link, 'SOL' in coins, ','.join(coins),
+                     ','.join(alert_coins(title))))
     return rows
 
 
@@ -95,18 +93,30 @@ async def main():
             sentiment REAL          -- se rellenará al puntuar (p. ej. FinBERT)
         )
     """)
-    await conn.execute("ALTER TABLE news_headlines ADD COLUMN IF NOT EXISTS coins TEXT")  # monedas mencionadas
+    await conn.execute("ALTER TABLE news_headlines ADD COLUMN IF NOT EXISTS coins TEXT")   # monedas mencionadas
+    await conn.execute("ALTER TABLE news_headlines ADD COLUMN IF NOT EXISTS alerts TEXT")  # alertas de evento grave
     total = 0
     for source, url in FEEDS.items():
         try:
             rows = fetch_feed(source, url)
             result = await conn.executemany("""
-                INSERT INTO news_headlines (published, source, title, summary, link, mentions_sol, coins)
-                VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (link) DO NOTHING
+                INSERT INTO news_headlines (published, source, title, summary, link, mentions_sol, coins, alerts)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT (link) DO NOTHING
             """, rows)
             total += len(rows)
         except Exception as e:
             logger.warning(f"⚠️ {source}: {e}")
+    # Recalcular etiquetas con las reglas vigentes (titulares antiguos o sin etiquetar)
+    old = await conn.fetch("SELECT id, title, summary FROM news_headlines WHERE alerts IS NULL")
+    if old:
+        await conn.executemany("UPDATE news_headlines SET coins = $2, alerts = $3, mentions_sol = $4 WHERE id = $1", [
+            (r['id'], ','.join(coins_in(f"{r['title']} {r['summary']}")), ','.join(alert_coins(r['title'])),
+             'SOL' in coins_in(f"{r['title']} {r['summary']}")) for r in old])
+    # Sentimiento de los titulares aún sin puntuar (VADER + léxico cripto)
+    unscored = await conn.fetch("SELECT id, title FROM news_headlines WHERE sentiment IS NULL")
+    if unscored:
+        await conn.executemany("UPDATE news_headlines SET sentiment = $2 WHERE id = $1",
+                               [(r['id'], sentiment(r['title'])) for r in unscored])
     count = await conn.fetchval("SELECT count(*) FROM news_headlines")
     sol = await conn.fetchval("SELECT count(*) FROM news_headlines WHERE mentions_sol")
     await conn.close()

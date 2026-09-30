@@ -16,3 +16,4 @@ protobuf<6          # protobuf 7 rompe la exportación de skl2onnx
 
 # Notebooks y gráficos
 matplotlib==3.11.2
+vaderSentiment==3.3.2   # sentimiento de titulares (+ léxico cripto en scripts/news_rules.py)

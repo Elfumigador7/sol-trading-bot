@@ -4,10 +4,10 @@
 
 cd "$(dirname "$0")" || exit 1
 PY=venv/bin/python
-SERVICES="data_ingester"   # trading_engine (5 min) retirado el 2026-09-30: sin ventaja; ver docs/ESTADO_BOT.md
+SERVICES="data_ingester panel_server"   # trading_engine (5 min) retirado el 2026-09-30: sin ventaja; ver docs/ESTADO_BOT.md
 
 is_running() { pgrep -f "python scripts/$1.py" > /dev/null; }
-log_of() { case "$1" in data_ingester) echo logs/ingester.log ;; *) echo logs/engine.log ;; esac; }
+log_of() { case "$1" in data_ingester) echo logs/ingester.log ;; panel_server) echo logs/panel.log ;; *) echo logs/engine.log ;; esac; }
 
 start() {
     for s in $SERVICES; do
@@ -30,6 +30,7 @@ status() {
     for s in $SERVICES; do
         if is_running "$s"; then echo "✅ $s: corriendo"; else echo "❌ $s: parado"; fi
     done
+    echo "📊 Panel: http://$(hostname -I | awk '{print $1}'):8899/panel.html"
     venv/bin/python scripts/report.py 2>/dev/null | sed -n '3,$p'
 }
 

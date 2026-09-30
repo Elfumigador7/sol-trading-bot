@@ -8,7 +8,7 @@
 ## 0. Estrategia activa (desde 2026-09-30): tendencia en paper trading
 
 `scripts/trend_engine.py` (cron cada hora, actúa una vez al día al cerrar la vela de 00:00 UTC).
-7 cuentas virtuales de 1.000 USD (tabla `trend_accounts`, log `logs/trend.log`):
+8 cuentas virtuales de 1.000 USD (tabla `trend_accounts`, log `logs/trend.log`), más una novena si el autoentrenamiento activa un retador:
 
 | Cuenta | Regla | Backtest 2023-09 → 2026-09 (cambios/año, retorno, Sharpe, DD) |
 |---|---|---|
@@ -18,6 +18,8 @@
 | `cesta_20d` | SOL/BTC/ETH 1/3 cada una, EMA 20 d | 127 · +228 % · 1.20 · −34 % |
 | `rotacion_top3` | Top-3 de 11 monedas por retorno 14 d, si en tendencia 20 d y BTC > EMA 50 d | 135 días/año · +634 % · 1.43 · −48 % (*) |
 | `cesta11_btc` | 11 monedas 1/11 con EMA 20 d, solo si BTC > EMA 50 d | 153 días/año · +160 % · 1.01 · −41 % |
+| `rotacion_top3_noticias` | Igual que `rotacion_top3`, sin monedas con alerta de noticias grave en 72 h + freno de emergencia cada hora | Experimento (sin backtest posible) |
+| `rotacion_ml` | Solo si el autoentrenamiento mensual lo activa (ver abajo) | — |
 | `buy_and_hold` | Siempre 100 % SOL (referencia) | 0 · +417 % · 1.05 · −78 % |
 
 (*) Robustez de la rotación (27 combinaciones de lookback 7/14/28 d × top 2/3/5 × EMA BTC 20/50/100):
@@ -96,9 +98,33 @@ estrategia; la ventaja se ve en varios años y, sobre todo, en caídas mucho men
 - Apalancamiento sobre `rotacion_top3`: 1,5x → +1.341 % con DD −65 %; 2x → DD −79 %;
   3x → DD −94 % (liquidación probable). Multiplica el beneficio del pasado y, sobre todo, el riesgo.
 
+### Experimento de noticias (desde 2026-09-30)
+Reglas fijadas **antes** de ver resultados (`scripts/news_rules.py`, con tests): una alerta para una moneda
+exige que la moneda esté en el **titular**, que haya una palabra de evento grave (hack, exploit, outage,
+demanda, delisting, insolvencia…) y que el titular mencione **como máximo 2 monedas**. Falsos positivos
+conocidos y aceptados (p. ej. el primero: "…after the Kelp Hack, Chainlink lets institutions…" excluyó LINK).
+Se evalúa comparando `rotacion_top3_noticias` con `rotacion_top3` tras varios meses.
+Sentimiento de cada titular: VADER + léxico cripto (columna `sentiment`), para usarlo como feature.
+
+### Autoentrenamiento mensual (`scripts/monthly_research.py`, día 1 a las 05:00)
+Reentrena con todos los datos un **meta-modelo** (López de Prado) que decide si fiarse de cada elección
+de la rotación (momentum, volatilidad, BTC, funding y, con ≥ 90 días de titulares, noticias).
+**Barrera** para activarlo en paper (`rotacion_ml`): Sharpe fuera de muestra mejor que la rotación en el
+periodo completo **y** en cada subperiodo (2021-07→2023-08, 2023-09→hoy), caída no peor, y DSR ≥ 0,95
+contando todas las variantes probadas en todos los meses (`models/research_trials.json`).
+Informe en `reports/investigacion_AAAA-MM.md`.
+
+Primera ejecución (2026-09): AUC 0,543. Con umbral 0,5: Sharpe 1,09 vs 0,91 y caída −37 % vs −71 %
+en el total, **pero peor en 2023-09→hoy (1,16 vs 1,43)** → **no pasa, no se activa**.
+
+### Panel
+`http://192.168.1.94:8899/panel.html` (red local; `scripts/panel.py` cada 15 min, servido por
+`scripts/panel_server.py`): salud, capital y caídas por cuenta, posiciones, alarmas, sentimiento y
+alertas de noticias, mercado en Hyperliquid y estado del autoentrenamiento. El puerto 8080 lo usa otro servicio.
+
 ## 0.1 Calendario de revisión (decidido el 2026-09-30, antes de ver resultados)
 
-**Cada semana (opcional, 1 min):** `./bot.sh status` → que todo esté en ✅.
+**Cada semana (opcional, 1 min):** abrir el panel (`http://192.168.1.94:8899/panel.html`) o `./bot.sh status` → que todo esté en ✅.
 
 **Al mes (~2026-10-30): revisión técnica, NO de rentabilidad**
 1. `./bot.sh status`: todas las piezas en ✅ y ~30 días en la tabla de cuentas.
@@ -140,6 +166,9 @@ con una cantidad pequeña.
 | Informe | `scripts/report.py` | Cron cada hora → `reports/informe_actual.md` (salud de cada recolector + tabla de cuentas); los lunes copia en `reports/semanal/`. Lo muestra `./bot.sh status`. |
 | Copias | `scripts/backup.sh` | Cron diario 03:30: `pg_dump` comprimido en `backups/`, últimos 14 días. Copiar de vez en cuando al PC (protege de un fallo del disco). |
 | Logs | `logrotate.conf` | Cron diario 04:00: rotación semanal, 4 semanas, comprimidos. |
+| Panel | `scripts/panel.py` + `panel_server.py` | Panel web en el puerto 8899 (ver sección 0). |
+| Investigación mensual | `scripts/monthly_research.py` | Autoentrenamiento con barrera (ver sección 0). |
+| Reglas de noticias | `scripts/news_rules.py` | Etiquetado de monedas, alertas y sentimiento (compartido por recolector, motor y panel). |
 | Control | `bot.sh` | `./bot.sh start | stop | restart | status | retrain` |
 | Cron | `crontab -l` | Arranque al encender, watchdog cada 5 min, reentreno cada 6 h (log en `logs/train.log`). Quitar: `crontab -r`. |
 

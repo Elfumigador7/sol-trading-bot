@@ -29,7 +29,7 @@ import os
 import sys
 import time
 from pathlib import Path
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import asyncpg
 import numpy as np
@@ -39,6 +39,7 @@ from dotenv import load_dotenv
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'research'))
 from portfolio import btc_regime, ema_trend, equal_weight, top_momentum  # noqa: E402  (mismo código que el backtest)
+from news_rules import ALERT_WINDOW_H  # noqa: E402
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -67,6 +68,14 @@ ACCOUNTS = {
     'cesta11_btc': lambda c: btc_regime(equal_weight(ema_trend(c, 20)), c, 50),
     'buy_and_hold': lambda c: pd.DataFrame({'SOL': 1.0}, index=c.index),
 }
+# Experimento de noticias (desde 2026-09-30): igual que rotacion_top3, pero sin monedas con alerta de
+# evento grave en las últimas 72 h (reglas en news_rules.py) y con freno de emergencia cada hora.
+NEWS_ACCOUNT = 'rotacion_top3_noticias'
+NEWS_BASE = 'rotacion_top3'
+# Retador del autoentrenamiento mensual (scripts/monthly_research.py): solo existe si ha pasado la barrera
+ML_ACCOUNT = 'rotacion_ml'
+CHALLENGER_FILE = Path(__file__).resolve().parent.parent / 'models' / 'challenger.json'
+CHALLENGER_MODEL = CHALLENGER_FILE.with_name('challenger.pkl')
 
 DB_CONFIG = {
     'host': os.getenv('DB_HOST', 'localhost'),
@@ -106,6 +115,41 @@ def target_weights(closes: pd.DataFrame) -> dict:
     return out
 
 
+def binance_funding_last(index: pd.DatetimeIndex) -> pd.DataFrame:
+    """Última tasa de funding conocida en cada hora, por moneda (como en research/portfolio.py)."""
+    out = {}
+    for coin in UNIVERSE:
+        rows = requests.get("https://fapi.binance.com/fapi/v1/fundingRate",
+                            params={'symbol': f'{coin}USDT', 'limit': 1000}, timeout=30).json()
+        s = pd.Series([float(r['fundingRate']) for r in rows],
+                      index=pd.to_datetime([r['fundingTime'] for r in rows], unit='ms', utc=True).floor('h'))
+        out[coin] = s[~s.index.duplicated(keep='last')].sort_index().reindex(index, method='ffill')
+        time.sleep(0.2)
+    return pd.DataFrame(out)
+
+
+async def challenger_weights(closes: pd.DataFrame, base: dict) -> tuple[dict, dict] | None:
+    """Pesos del retador (rotación filtrada por el meta-modelo) o None si no hay retador activo."""
+    if not CHALLENGER_FILE.exists():
+        return None
+    state = json.loads(CHALLENGER_FILE.read_text())
+    if not state.get('enabled') or not CHALLENGER_MODEL.exists():
+        return None
+    import pickle
+    import meta
+    news = None
+    if state.get('uses_news'):
+        from monthly_research import news_features
+        news, _ = await news_features()
+    with open(CHALLENGER_MODEL, 'rb') as f:
+        model = pickle.load(f)
+    ds = meta.build_dataset(closes, binance_funding_last(closes.index), news)
+    today = ds[ds.index == closes.index[-1].floor('D')]
+    probs = dict(zip(today['coin'], model.predict_proba(today[state['features']])[:, 1])) if len(today) else {}
+    weights = {c: (0.0 if probs.get(c, 1.0) < state['threshold'] else w) for c, w in base.items()}
+    return weights, {'variant': state['variant'], 'probabilidades': {c: round(p, 3) for c, p in probs.items()}}
+
+
 def hyperliquid_mids() -> dict:
     mids = requests.post("https://api.hyperliquid.xyz/info", json={"type": "allMids"}, timeout=30).json()
     return {coin: float(mids[coin]) for coin in UNIVERSE}
@@ -117,16 +161,7 @@ def hyperliquid_funding_sum(since: datetime, coin: str = "SOL") -> float:
     return float(sum(float(r['fundingRate']) for r in rows))
 
 
-async def main(force: bool):
-    closes = pd.DataFrame({coin: binance_hourly(f'{coin}USDT')['close'] for coin in UNIVERSE}).ffill()
-    # La señal del día se calcula SIEMPRE con datos hasta la vela de las 00:00 UTC (como en el backtest).
-    # Si la ejecución de la 01:02 UTC falla (Pi apagada, sin internet...), cualquier ejecución
-    # posterior del mismo día la recupera con la misma señal.
-    day_bar = closes.index[-1].floor('D')
-    closes = closes[closes.index <= day_bar]
-    day = day_bar.date()
-
-    conn = await asyncpg.connect(**DB_CONFIG)
+async def ensure_schema(conn):
     await conn.execute("""
         CREATE TABLE IF NOT EXISTS trend_accounts (
             id SERIAL PRIMARY KEY,
@@ -137,47 +172,139 @@ async def main(force: bool):
             weights JSONB,             -- {moneda: peso objetivo}
             prices JSONB,              -- {moneda: mid de Hyperliquid al ajustar}
             funding JSONB,             -- {moneda: funding acumulado desde la revisión anterior}
-            signals JSONB,             -- datos de la señal (cierre, EMA, volatilidad)
-            UNIQUE (day, account)
+            signals JSONB,             -- motivo del ajuste / datos de la señal
+            seq INT DEFAULT 0,         -- 0 = revisión diaria; 1, 2… = ajustes de emergencia del día
+            UNIQUE (day, account, seq)
         )
     """)
-    if await conn.fetchval("SELECT count(*) FROM trend_accounts WHERE day = $1", day) and not force:
+    # Migración desde la versión con una sola fila por día y cuenta
+    await conn.execute("ALTER TABLE trend_accounts ADD COLUMN IF NOT EXISTS seq INT DEFAULT 0")
+    await conn.execute("ALTER TABLE trend_accounts DROP CONSTRAINT IF EXISTS trend_accounts_day_account_key")
+    await conn.execute("""
+        DO $$ BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'trend_accounts_day_account_seq_key') THEN
+                ALTER TABLE trend_accounts ADD CONSTRAINT trend_accounts_day_account_seq_key UNIQUE (day, account, seq);
+            END IF;
+        END $$;
+    """)
+
+
+def mark_to_market(prev, prices: dict) -> tuple[float, dict, dict]:
+    """Capital actual de una cuenta desde su última fila, con funding pagado. Devuelve (capital, pesos, funding)."""
+    if prev is None:
+        return START_CAPITAL, {}, {}
+    prev_w = json.loads(prev['weights'])
+    prev_px = json.loads(prev['prices'])
+    pnl, funding = 0.0, {}
+    for coin, w in prev_w.items():
+        if w:
+            funding[coin] = hyperliquid_funding_sum(prev['run_time'], coin)
+            pnl += w * (prices[coin] / prev_px[coin] - 1) - w * funding[coin]
+    return float(prev['equity']) * (1 + pnl), prev_w, funding
+
+
+async def alerted_coins(conn, since: datetime) -> dict:
+    """{moneda: primer titular} con alerta de evento grave publicada desde `since`."""
+    rows = await conn.fetch("SELECT alerts, title FROM news_headlines WHERE alerts <> '' AND published >= $1 "
+                            "ORDER BY published", since)
+    out = {}
+    for r in rows:
+        for coin in r['alerts'].split(','):
+            out.setdefault(coin, r['title'])
+    return out
+
+
+async def news_emergency(conn, prices: dict):
+    """Cada hora: si la cuenta de noticias tiene una moneda con alerta nueva, la vende sin esperar al día siguiente."""
+    prev = await conn.fetchrow("SELECT * FROM trend_accounts WHERE account = $1 ORDER BY day DESC, seq DESC LIMIT 1",
+                               NEWS_ACCOUNT)
+    if prev is None:
+        return
+    held = {c for c, w in json.loads(prev['weights']).items() if w > 1e-9}
+    alerts = {c: t for c, t in (await alerted_coins(conn, prev['run_time'])).items() if c in held}
+    if not alerts:
+        return
+    equity, prev_w, funding = mark_to_market(prev, prices)
+    weights = {c: (0.0 if c in alerts else w) for c, w in prev_w.items()}
+    equity *= 1 - sum(abs(weights[c] - prev_w[c]) for c in prev_w) * COST
+    today = datetime.now(timezone.utc).date()
+    seq = (await conn.fetchval("SELECT max(seq) FROM trend_accounts WHERE account = $1 AND day = $2",
+                               NEWS_ACCOUNT, today) or 0) + 1
+    await conn.execute("""
+        INSERT INTO trend_accounts (day, account, equity, weights, prices, funding, signals, seq)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+    """, today, NEWS_ACCOUNT, equity, json.dumps(weights), json.dumps(prices), json.dumps(funding),
+        json.dumps({'emergencia_noticias': alerts}), seq)
+    for coin, title in alerts.items():
+        logger.info(f"🚨 {NEWS_ACCOUNT}: vende {coin} por noticia: {title[:120]}")
+
+
+async def main(force: bool):
+    conn = await asyncpg.connect(**DB_CONFIG)
+    await ensure_schema(conn)
+    now = datetime.now(timezone.utc)
+    prices = None
+
+    # 1) Freno de emergencia de noticias (cada hora, barato)
+    if await conn.fetchval("SELECT to_regclass('news_headlines') IS NOT NULL"):
+        prices = hyperliquid_mids()
+        await news_emergency(conn, prices)
+
+    # 2) Revisión diaria. La señal se calcula SIEMPRE con datos hasta la vela de las 00:00 UTC (como en el
+    # backtest); si la ejecución de la 01:02 UTC falla, cualquier ejecución posterior del día la recupera.
+    expected_day = (pd.Timestamp(now).floor('h') - pd.Timedelta(hours=1)).floor('D').date()
+    if not force and await conn.fetchval(
+            "SELECT count(*) FROM trend_accounts WHERE day = $1 AND seq = 0", expected_day):
         await conn.close()
         return  # ya revisado hoy
 
+    closes = pd.DataFrame({coin: binance_hourly(f'{coin}USDT')['close'] for coin in UNIVERSE}).ffill()
+    day_bar = closes.index[-1].floor('D')
+    closes = closes[closes.index <= day_bar]
+    day = day_bar.date()
+    if not force and await conn.fetchval("SELECT count(*) FROM trend_accounts WHERE day = $1 AND seq = 0", day):
+        await conn.close()
+        return
+
     targets = target_weights(closes)
+    news_alerts = await alerted_coins(conn, now - timedelta(hours=ALERT_WINDOW_H))
+    targets[NEWS_ACCOUNT] = {c: (0.0 if c in news_alerts else w) for c, w in targets[NEWS_BASE].items()}
+    ml_signals = {}
+    try:
+        challenger = await challenger_weights(closes, targets[NEWS_BASE])
+        if challenger:
+            targets[ML_ACCOUNT], ml_signals = challenger
+    except Exception as e:
+        logger.warning(f"⚠️ retador no disponible hoy: {e}")
     prices = hyperliquid_mids()
     lines = []
     for name, weights in targets.items():
-        prev = await conn.fetchrow(
-            "SELECT * FROM trend_accounts WHERE account = $1 AND day < $2 ORDER BY day DESC LIMIT 1", name, day)
-        funding = {}
-        if prev is None:
-            equity, prev_w = START_CAPITAL, {}
-        else:
-            prev_w = json.loads(prev['weights'])
-            prev_px = json.loads(prev['prices'])
-            pnl = 0.0
-            for coin, w in prev_w.items():
-                if w:
-                    funding[coin] = hyperliquid_funding_sum(prev['run_time'], coin)
-                    pnl += w * (prices[coin] / prev_px[coin] - 1) - w * funding[coin]
-            equity = float(prev['equity']) * (1 + pnl)
+        if force:  # repetir el día: quitar sus ajustes de emergencia para no mezclar
+            await conn.execute("DELETE FROM trend_accounts WHERE account = $1 AND day = $2 AND seq > 0", name, day)
+        prev = await conn.fetchrow("SELECT * FROM trend_accounts WHERE account = $1 AND day < $2 "
+                                   "ORDER BY day DESC, seq DESC LIMIT 1", name, day)
+        equity, prev_w, funding = mark_to_market(prev, prices)
         turnover = sum(abs(weights.get(c, 0) - prev_w.get(c, 0)) for c in set(weights) | set(prev_w))
         equity *= 1 - turnover * COST
+        signals = ml_signals if name == ML_ACCOUNT else {}
+        if name == NEWS_ACCOUNT:
+            signals = {'excluidas_por_noticias': {c: t for c, t in news_alerts.items()
+                                                   if targets[NEWS_BASE].get(c, 0) > 0}}
         await conn.execute("""
-            INSERT INTO trend_accounts (day, account, equity, weights, prices, funding, signals)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
-            ON CONFLICT (day, account) DO UPDATE SET run_time = now(), equity = EXCLUDED.equity,
+            INSERT INTO trend_accounts (day, account, equity, weights, prices, funding, signals, seq)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, 0)
+            ON CONFLICT (day, account, seq) DO UPDATE SET run_time = now(), equity = EXCLUDED.equity,
                 weights = EXCLUDED.weights, prices = EXCLUDED.prices, funding = EXCLUDED.funding,
                 signals = EXCLUDED.signals
-        """, day, name, equity, json.dumps(weights), json.dumps(prices), json.dumps(funding), json.dumps({}))
+        """, day, name, equity, json.dumps(weights), json.dumps(prices), json.dumps(funding), json.dumps(signals))
 
         changes = [f"{c} {prev_w.get(c, 0):.0%}→{weights.get(c, 0):.0%}" for c in sorted(set(weights) | set(prev_w))
                    if abs(weights.get(c, 0) - prev_w.get(c, 0)) > 1e-9]
         held = ', '.join(f"{c} {w:.0%}" for c, w in weights.items() if w > 1e-9) or 'liquidez'
-        lines.append(f"{name:<14} capital {equity:>9,.2f} USD ({equity / START_CAPITAL - 1:+6.1%}) | {held}"
-                     + (f" | cambios: {'; '.join(changes)}" if changes else ''))
+        excluded = signals.get('excluidas_por_noticias')
+        lines.append(f"{name:<22} capital {equity:>9,.2f} USD ({equity / START_CAPITAL - 1:+6.1%}) | {held}"
+                     + (f" | cambios: {'; '.join(changes)}" if changes else '')
+                     + (f" | 📰 excluidas: {', '.join(excluded)}" if excluded else ''))
     await conn.close()
 
     up20 = ema_trend(closes, 20).iloc[-1]

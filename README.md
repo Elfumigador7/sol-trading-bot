@@ -49,6 +49,23 @@ mania): median one-year return of about +13 % for the rotation, with a 42 % chan
 in any given year. The edge shows up over several years, and mostly as avoided crashes. For
 example, the 11-coin basket had a 3 % chance of a drawdown above 50 %, versus 80 % for holding SOL.
 
+## Live experiments (paper trading)
+
+- **News risk brake.** A copy of the rotation that drops a coin for 72 h after a high-impact negative
+  headline (hack, exploit, outage, lawsuit, delisting…), plus an hourly emergency exit. The rules were
+  fixed before seeing any result, are unit-tested, and live in `scripts/news_rules.py`. It can't be
+  backtested (no timestamped news history), so it is measured live against the plain rotation.
+  Headlines from 10 feeds are also sentiment-scored (VADER + crypto lexicon), to be used as features later.
+- **Monthly self-training with a promotion gate.** A meta-labeling model (López de Prado) learns when to
+  trust each rotation pick. It is retrained monthly on all data and **promoted to paper only if** it beats
+  the plain rotation out-of-sample in the full period *and* in every sub-period, with no worse drawdown
+  and a Deflated Sharpe ≥ 0.95 counting **every variant ever tried** (a persistent trial registry).
+  First run: AUC 0.543. It halved the max drawdown (−37 % vs −71 %) but was worse in 2023–26
+  (Sharpe 1.16 vs 1.43), so it was **not promoted**.
+- **Web dashboard** on the Pi's LAN: health, equity and drawdown per account, positions, degradation
+  alarms (drawdown worse than anything seen in backtests), news alerts and sentiment, and Hyperliquid
+  market depth.
+
 ## Methodology: how not to fool yourself
 
 | Pitfall | Safeguard in this repo |
@@ -96,7 +113,10 @@ scripts/            Live system on the Pi
   data_ingester.py    Hyperliquid trade stream → DB (heartbeat, reconnect, dedup)
   market_snapshots.py open interest / funding / order-book depth every 5 min
   news_collector.py   10 RSS/Atom feeds → DB, tagged by coin
-  report.py           hourly health check + account table
+  report.py           hourly health check, degradation alarms, account table
+  panel.py            web dashboard (Chart.js), served on the LAN by panel_server.py
+  monthly_research.py monthly self-training with a promotion gate and trial registry
+  news_rules.py       news alert rules and sentiment scoring (shared, unit-tested)
   ws_utils.py         WebSocket with heartbeat and exponential-backoff reconnect
 research/           Research lab (runs on the Pi or the PC)
   lab.py              backtester: costs, maker/taker fills, walk-forward, Deflated Sharpe
@@ -104,6 +124,7 @@ research/           Research lab (runs on the Pi or the PC)
   features_h.py       67 hourly features (market structure, positioning, cross-asset, sentiment)
   ml.py               triple-barrier labels, walk-forward gradient boosting
   portfolio.py        multi-coin trend / momentum portfolios (shared with live engine)
+  meta.py             meta-labeling on the rotation (walk-forward, monthly retraining)
   data.py, live_data.py  historical and live data loaders (Binance, Hyperliquid, GDELT, …)
   run_lab.py, run_ml.py, make_figures.py, laboratorio_estrategias.ipynb
 tests/              pytest suite (offline, synthetic data), run in CI
@@ -140,8 +161,7 @@ The cron schedule used on the Pi is documented in [`docs/ESTADO_BOT.md`](docs/ES
 
 - Several months of live paper trading to compare against the backtest, with review criteria fixed
   in advance.
-- Score the collected headlines with a financial-sentiment model (FinBERT on the RTX 3060) and
-  walk-forward test a news-based risk filter.
+- Compare the lexicon sentiment with FinBERT (RTX 3060) once months of headlines have accumulated.
 - Execution on Hyperliquid testnet via the official SDK (signed orders, size and daily-loss limits,
   kill switch).
 

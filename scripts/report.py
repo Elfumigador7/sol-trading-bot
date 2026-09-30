@@ -37,11 +37,12 @@ HEALTH = [
     ('Revisión diaria de tendencia', "SELECT max(run_time) FROM trend_accounts", timedelta(hours=26)),
 ]
 
-# Referencia del backtest 2023-09 → 2026-09 (Sharpe, caída máxima) para comparar
-BACKTEST = {
-    'sol_20d': (1.25, -0.50), 'sol_50d': (1.22, -0.56), 'sol_50d_vol': (1.27, -0.51),
-    'cesta_20d': (1.20, -0.34), 'rotacion_top3': (1.43, -0.48), 'cesta11_btc': (1.01, -0.41),
-    'buy_and_hold': (1.05, -0.78),
+# Referencia del backtest 2023-09 → 2026-09: (Sharpe, caída máxima), y peor caída vista en CUALQUIER periodo
+# probado (incluida la validación 2020-23). Si una cuenta cae más que eso → alarma de degradación.
+BACKTEST = {  # peor caída calculada con research/portfolio.py sobre 2020-10 → 2026-09
+    'sol_20d': (1.25, -0.50, -0.73), 'sol_50d': (1.22, -0.56, -0.69), 'sol_50d_vol': (1.27, -0.51, -0.53),
+    'cesta_20d': (1.20, -0.34, -0.56), 'rotacion_top3': (1.43, -0.48, -0.71), 'cesta11_btc': (1.01, -0.41, -0.42),
+    'rotacion_top3_noticias': (None, None, -0.71), 'buy_and_hold': (1.05, -0.78, None),
 }
 
 
@@ -71,13 +72,18 @@ async def main():
             lines.append(f"- ✅ {name}: {ago(now - last)}")
     lines.insert(3, "**Todo funciona.**" if not problems else f"**⚠️ {problems} problema(s): revisar con `./bot.sh status` y los logs.**")
 
-    rows = await conn.fetch("SELECT account, day, equity, weights FROM trend_accounts ORDER BY account, day")
+    rows = await conn.fetch("SELECT account, day, seq, equity, weights, signals FROM trend_accounts "
+                            "ORDER BY account, day, seq")
+    alerts = await conn.fetch("SELECT published, alerts, title FROM news_headlines WHERE alerts <> '' "
+                              "AND published > now() - interval '7 days' ORDER BY published DESC") \
+        if await conn.fetchval("SELECT to_regclass('news_headlines') IS NOT NULL") else []
     await conn.close()
 
     accounts = {}
     for r in rows:
         accounts.setdefault(r['account'], []).append(r)
 
+    degraded = []
     lines += ["", "## Cuentas paper (1.000 USD iniciales cada una)", "",
               "| Cuenta | Capital | Retorno | Caída desde máximo | Peor caída | Días con cambios | Posición actual | Backtest (Sharpe · peor caída) |",
               "|---|---|---|---|---|---|---|---|"]
@@ -92,11 +98,21 @@ async def main():
         changes = sum(1 for a, b in zip(weights, weights[1:])
                       if any(abs(a.get(c, 0) - b.get(c, 0)) > 1e-9 for c in set(a) | set(b)))
         held = ', '.join(f"{c} {w:.0%}" for c, w in weights[-1].items() if w > 1e-9) or 'liquidez'
-        sr, dd = BACKTEST.get(name, (None, None))
+        sr, dd, limit = BACKTEST.get(name, (None, None, None))
         ref = f"{sr:.2f} · {dd:.0%}" if sr else '—'
-        lines.append(f"| {name} | {eq[-1]:,.2f} | {eq[-1] / 1000 - 1:+.1%} | {current_dd:+.1%} | {worst:+.1%} | "
+        flag = ''
+        if limit is not None and current_dd < limit:
+            flag = ' ⚠️'
+            degraded.append(f"{name}: cae {current_dd:.0%} desde su máximo, peor que el peor caso del backtest ({limit:.0%})")
+        lines.append(f"| {name}{flag} | {eq[-1]:,.2f} | {eq[-1] / 1000 - 1:+.1%} | {current_dd:+.1%} | {worst:+.1%} | "
                      f"{changes} | {held} | {ref} |")
-    days = len(next(iter(accounts.values()))) if accounts else 0
+    if degraded:
+        lines[3] = f"**⚠️ Alarma de degradación: {len(degraded)} cuenta(s) fuera de lo visto en el backtest.**"
+        lines += ["", "## ⚠️ Alarmas de degradación", ""] + [f"- {d}" for d in degraded] + [
+            "", "Qué hacer: no es motivo para cambiar nada de inmediato, pero sí para revisar (ver docs/ESTADO_BOT.md §0.1)."]
+    lines += ["", "## 📰 Alertas de noticias (últimos 7 días)", ""]
+    lines += [f"- {a['published']:%m-%d %H:%M} · **{a['alerts']}** · {a['title'][:110]}" for a in alerts] or ["- ninguna"]
+    days = len({r['day'] for r in rows if r['account'] == 'buy_and_hold'})
     lines += ["", f"Días en paper: {days}. Con menos de ~60 días los resultados son sobre todo ruido: "
               "fíjate en que funcione y en que las caídas no superen lo visto en el backtest."]
 
