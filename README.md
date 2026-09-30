@@ -1,316 +1,150 @@
-# 🚀 Sistema de Trading Automatizado - Solana/Hyperliquid
+# SOL Trading Bot: systematic crypto research, from a Raspberry Pi
 
-> **📌 Estado actual (30-sep-2026):** este README describe la idea original. Cómo funciona hoy el sistema: [`docs/ESTADO_BOT.md`](docs/ESTADO_BOT.md). Historia completa (Jupyter, ONNX, qué falló y cómo se llegó aquí): [`docs/HISTORIA.md`](docs/HISTORIA.md).
+[![tests](https://github.com/Elfumigador7/sol-trading-bot/actions/workflows/tests.yml/badge.svg)](https://github.com/Elfumigador7/sol-trading-bot/actions/workflows/tests.yml)
 
+An end-to-end quantitative trading system built on a Raspberry Pi 5 plus a desktop PC. It
+collects market data 24/7, runs a research lab that tests strategies from academic papers
+**without fooling itself**, and paper-trades the only approach that survived.
 
-## 🏗️ Arquitectura Dual
+> **Status:** paper trading only (no real money). Not financial advice.
+> Documentation in Spanish: [project state & results](docs/ESTADO_BOT.md) · [project history](docs/HISTORIA.md).
+
+## TL;DR
+
+- **Tested 300+ strategy configurations** at 1–48 h horizons: intraday momentum, mean reversion,
+  hour-of-day seasonality, funding-rate extremes, order-flow imbalance, volatility breakouts, and a
+  gradient-boosting model with 67 features. After realistic costs, **none beat buy & hold.** The ML
+  model's out-of-sample AUC was 0.49–0.51, which is chance.
+- **What worked: trend following.** A momentum rotation across 11 coins with a BTC regime filter
+  beat buy & hold both in the period where the rules were chosen and in an **independent period
+  never used for design** (2020–23, including the 2021 bull run and the 2022 crash).
+- **The robust benefit is smaller drawdowns, not guaranteed higher returns.** The same rules on 11
+  traditional ETFs (2007–2026) cut drawdowns in 10 of 11 assets, while returns improved only where
+  trends are strong.
+- Started from a notebook claiming **91 % accuracy**, which turned out to be data leakage (its own
+  cross-validation showed 42 %). The whole project is built around not repeating that mistake.
+
+![Equity curves](docs/img/equity.png)
+![Drawdowns](docs/img/drawdown.png)
+
+## Results
+
+| Strategy | Selection period 2023-09 → 2026-09 | Independent validation 2020-10 → 2023-08 |
+|---|---|---|
+| | return · Sharpe · max drawdown | return · Sharpe · max drawdown |
+| **Momentum rotation** (top-3 of 11 coins, trend + BTC filter) | +634 % · **1.43** · −48 % | +850 % · **1.37** · −69 % |
+| **11-coin trend basket** + BTC filter | +160 % · 1.01 · −41 % | +430 % · **1.37** · **−40 %** |
+| SOL trend (20-day EMA) | +498 % · 1.25 · −50 % | +783 % · 1.23 · −73 % |
+| *Buy & hold SOL (benchmark)* | *+417 % · 1.05 · −78 %* | *+602 % · 1.18 · −97 %* |
+
+All figures include taker fees, slippage and perpetual funding, with daily rebalancing at 00:00 UTC.
+The coin universe is the **top-20 of January 2023**, not today's winners, to avoid survivorship bias.
+All 27 neighbouring parameter sets of the rotation beat buy & hold in the independent period
+(median Sharpe 1.58).
+
+![What worked](docs/img/research.png)
+
+**Honest expectations** (block-bootstrap Monte Carlo, 10,000 simulated years, excluding the 2021
+mania): median one-year return of about +13 % for the rotation, with a 42 % chance of losing money
+in any given year. The edge shows up over several years, and mostly as avoided crashes. For
+example, the 11-coin basket had a 3 % chance of a drawdown above 50 %, versus 80 % for holding SOL.
+
+## Methodology: how not to fool yourself
+
+| Pitfall | Safeguard in this repo |
+|---|---|
+| Look-ahead bias | Every feature uses only data up to its bar's close. A unit test recomputes features on truncated data, and a mutation test confirms it catches a leaking feature |
+| Random train/test splits on time series | Walk-forward only: train on the past, test on the following month, **purging** overlapping labels |
+| Ignoring costs | Taker fees, slippage, funding, and a conservative limit-order fill model with **adverse selection** (fills only when price trades through; missed trades are lost) |
+| Luck from testing many ideas | **Deflated Sharpe Ratio** (Bailey & López de Prado) over every configuration tried; robustness grids over neighbouring parameters |
+| Selection bias | Rules chosen on 2023–26, then validated unchanged on 2020–23 |
+| Survivorship bias | Universe fixed as of January 2023 |
+| Backtest ≠ live | Live signals recomputed from live APIs and checked against the backtest (30 days × 7 accounts, 0 differences) |
+| "Chasing the best strategy" | Simulated re-selecting the best performer monthly without hindsight: worse than fixed rules |
+
+## Architecture
+
+```mermaid
+flowchart LR
+    subgraph PI[Raspberry Pi 5, 24/7, cron + Docker]
+        HL[(Hyperliquid WS/API)] --> ING[data_ingester<br/>SOL trades]
+        HL --> SNAP[market_snapshots<br/>OI, funding, order-book depth]
+        RSS[(10 news feeds)] --> NEWS[news_collector]
+        BN[(Binance API)] --> TREND[trend_engine<br/>7 paper accounts]
+        ING --> DB[(PostgreSQL /<br/>TimescaleDB)]
+        SNAP --> DB
+        NEWS --> DB
+        TREND --> DB
+        DB --> REP[report<br/>health + P&L, hourly]
+        DB --> BAK[backup<br/>daily pg_dump]
+    end
+    subgraph PC[Desktop PC: research]
+        LAB[research/ lab<br/>backtests, walk-forward,<br/>ML, Monte Carlo] --> NB[Jupyter notebook]
+    end
+    PORT[research/portfolio.py<br/>shared signal code] -.same code.-> TREND
+    PORT -.same code.-> LAB
+```
+
+The strategy logic lives in one module (`research/portfolio.py`) used by both the backtests and the
+live engine, so research and production cannot drift apart.
+
+## Repository layout
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    RED LOCAL (LAN/WiFi)                      │
-├──────────────────────────┬──────────────────────────────────┤
-│  NODO 1: RASPBERRY PI    │  NODO 2: PC ESCRITORIO           │
-│  (Ejecución 24/7)        │  (Entrenamiento bajo demanda)    │
-├──────────────────────────┼──────────────────────────────────┤
-│  • TimescaleDB           │  • Jupyter Notebook              │
-│  • Data Ingester         │  • Python + ML Libraries         │
-│  • Trading Engine        │  • SQL Connector                 │
-│  • Modelo ONNX           │  • Exportador .onnx              │
-└──────────────────────────┴──────────────────────────────────┘
+scripts/            Live system on the Pi
+  trend_engine.py     daily paper-trading engine (7 accounts, 11 coins)
+  data_ingester.py    Hyperliquid trade stream → DB (heartbeat, reconnect, dedup)
+  market_snapshots.py open interest / funding / order-book depth every 5 min
+  news_collector.py   10 RSS/Atom feeds → DB, tagged by coin
+  report.py           hourly health check + account table
+  ws_utils.py         WebSocket with heartbeat and exponential-backoff reconnect
+research/           Research lab (runs on the Pi or the PC)
+  lab.py              backtester: costs, maker/taker fills, walk-forward, Deflated Sharpe
+  strategies.py       paper-based intraday strategies with parameter grids
+  features_h.py       67 hourly features (market structure, positioning, cross-asset, sentiment)
+  ml.py               triple-barrier labels, walk-forward gradient boosting
+  portfolio.py        multi-coin trend / momentum portfolios (shared with live engine)
+  data.py, live_data.py  historical and live data loaders (Binance, Hyperliquid, GDELT, …)
+  run_lab.py, run_ml.py, make_figures.py, laboratorio_estrategias.ipynb
+tests/              pytest suite (offline, synthetic data), run in CI
+docs/               state & results, project history (Spanish), figures
+legacy/             original template and the first Jupyter → ONNX pipeline, kept for history
 ```
 
----
+## Tech stack
 
-## 📋 Hoja de Ruta (4 Fases)
+Python 3.11 · pandas / NumPy / SciPy · scikit-learn (HistGradientBoosting) · ONNX / onnxruntime ·
+asyncio + websockets · asyncpg + PostgreSQL / TimescaleDB (Docker) · matplotlib · pytest ·
+GitHub Actions · cron · Raspberry Pi OS · REST/WebSocket APIs (Hyperliquid, Binance, GDELT, RSS).
 
-### ✅ **FASE 1: La Fundación de Datos** (Dificultad: Baja)
+## Running it
 
-#### Paso 1: Preparar Raspberry Pi
 ```bash
-# 1. Instalar Raspberry Pi OS 64-bit en SSD M.2
-# 2. Actualizar sistema
-sudo apt update && sudo apt upgrade -y
+cp .env.example .env               # fill in DB credentials
+docker-compose up -d               # PostgreSQL / TimescaleDB
+python -m venv venv && venv/bin/pip install -r requirements.txt
+./bot.sh start                     # data ingester (watchdog via cron)
+venv/bin/python scripts/trend_engine.py --force   # first paper-trading run
+./bot.sh status                    # health + accounts
 
-# 3. Instalar Docker
-curl -fsSL https://get.docker.com | bash
-sudo usermod -aG docker $USER
-newgrp docker
+# Research (downloads history on first run)
+cd research && python run_lab.py && python run_ml.py && python make_figures.py
 
-# 4. Clonar este repositorio en la Pi
-cd ~
-git clone <tu-repo>
-cd trading_system
+# Tests
+pip install -r requirements-dev.txt && pytest -q tests
 ```
 
-#### Paso 2: Levantar TimescaleDB con Docker
-```bash
-# Iniciar contenedor
-docker-compose up -d
+The cron schedule used on the Pi is documented in [`docs/ESTADO_BOT.md`](docs/ESTADO_BOT.md).
 
-# Verificar que funciona
-docker ps
-docker logs timescaledb
+## What I would do next
 
-# Conectar a la base de datos (opcional)
-docker exec -it timescaledb psql -U solana_user -d solana_trading
-```
+- Several months of live paper trading to compare against the backtest, with review criteria fixed
+  in advance.
+- Score the collected headlines with a financial-sentiment model (FinBERT on the RTX 3060) and
+  walk-forward test a news-based risk filter.
+- Execution on Hyperliquid testnet via the official SDK (signed orders, size and daily-loss limits,
+  kill switch).
 
-#### Paso 3: Instalar dependencias Python en la Pi
-```bash
-# Instalar Python y pip si no existen
-sudo apt install python3-pip -y
+## License
 
-# Crear entorno virtual (recomendado)
-python3 -m venv venv
-source venv/bin/activate
-
-# Instalar requirements
-pip install -r requirements.txt
-```
-
-#### Paso 4: Ejecutar el Data Ingester
-```bash
-# Ejecutar en segundo plano (usando nohup o systemd)
-nohup python3 scripts/data_ingester.py > ingester.log 2>&1 &
-
-# O usar screen/tmux para sesión persistente
-screen -S trading
-python3 scripts/data_ingester.py
-# Ctrl+A, D para desconectar
-```
-
-#### Paso 5: Verificar que funciona
-```bash
-# Chequear logs
-tail -f ingester.log
-
-# Consultar datos en DB
-docker exec -it timescaledb psql -U solana_user -d solana_trading -c "SELECT COUNT(*) FROM solana_trades;"
-```
-
-**✅ Éxito cuando:** Ves trades llegando cada segundo y la tabla crece.
-
----
-
-### 🧠 **FASE 2: El Cerebro Base** (Dificultad: Media)
-
-#### Paso 1: Conectar PC al DB de la Pi
-En tu PC escritorio, crear `scripts/db_connector.py`:
-```python
-import asyncpg
-import pandas as pd
-
-async def fetch_trades(days=7):
-    conn = await asyncpg.connect(
-        host='192.168.1.X',  # IP de tu Pi
-        port=5432,
-        database='solana_trading',
-        user='solana_user',
-        password=os.getenv('DB_PASSWORD')
-    )
-    
-    query = """
-    SELECT * FROM solana_trades 
-    WHERE timestamp > NOW() - INTERVAL '{} days'
-    ORDER BY timestamp DESC
-    """.format(days)
-    
-    df = await conn.fetchdf(query)
-    await conn.close()
-    return df
-
-# Ejecutar
-trades = asyncio.run(fetch_trades(7))
-print(f"Descargados {len(trades)} trades de los últimos 7 días")
-```
-
-#### Paso 2: Entrenar modelo simple (Jupyter Notebook)
-Crear `notebooks/train_simple_model.ipynb`:
-- Cargar datos desde DB
-- Crear features (RSI, MACD, volumen)
-- Entrenar Random Forest / XGBoost
-- Evaluar con backtesting básico
-
-#### Paso 3: Exportar a ONNX
-```python
-from sklearn.ensemble import RandomForestClassifier
-import onnx
-
-# Entrenar modelo
-model = RandomForestClassifier()
-model.fit(X_train, y_train)
-
-# Exportar a ONNX
-from skl2onnx import convert_sklearn
-onnx_model = convert_sklearn(model, initial_types=[('input', FloatTensorType([None, X_train.shape[1]]))])
-
-with open("models/solana_model.onnx", "wb") as f:
-    onnx.save(onnx_model, f)
-```
-
-#### Paso 4: Enviar modelo a la Pi
-```bash
-# Opción A: SCP desde PC
-scp models/solana_model.onnx pi@192.168.1.X:/home/pi/trading_system/models/
-
-# Opción B: Carpeta compartida SMB/NFS
-mount -t cifs //PI_IP/share /mnt/pi_share -o user=pi,password=...
-cp solana_model.onnx /mnt/pi_share/
-```
-
-**✅ Éxito cuando:** Tienes un modelo .onnx en la carpeta `models/` de la Pi.
-
----
-
-### 🎯 **FASE 3: Ejecución en Papel** (Dificultad: Alta)
-
-#### Paso 1: Hyperliquid Testnet Setup
-1. Ir a https://testnet.hyperliquid.xyz/
-2. Crear cuenta y obtener API Agent Key
-3. Guardar en archivo `.env`:
-```
-HYPERLIQUID_API_KEY=tu_clave_aqui
-HYPERLIQUID_API_SECRET=tu_secret_aqui
-TESTNET=True
-```
-
-#### Paso 2: Trading Engine (Raspberry Pi)
-Crear `scripts/trading_engine.py` (similar al Data Ingester pero con lógica de trading):
-- Cargar modelo .onnx en memoria
-- Escuchar WebSocket en tiempo real
-- Calcular predicción cada segundo
-- Enviar órdenes si probabilidad > umbral
-
-#### Paso 3: Hot Reload System
-Crear `scripts/model_watcher.py`:
-```python
-import watchdog
-import os
-
-class ModelReloader(watchdog.observers.Observer):
-    def on_created(self, event):
-        if event.src_path.endswith('.onnx'):
-            logger.info("🔄 Nuevo modelo detectado, recargando...")
-            # Recargar modelo en memoria sin reiniciar engine
-```
-
-#### Paso 4: Backtesting Manual
-- Ejecutar Trading Engine con órdenes "en papel" (sin ejecutar realmente)
-- Guardar señales y resultados en `trading_history.csv`
-- Comparar con precio real después
-
-**✅ Éxito cuando:** El sistema genera señales de compra/venta consistentes.
-
----
-
-### 📈 **FASE 4: Modo Quant** (Dificultad: Continua)
-
-#### Análisis Avanzado (PC Escritorio)
-- NLP en noticias crypto (sentimiento)
-- Aprendizaje por Refuerzo (RL)
-- Modelos ensemble (XGBoost + Neural Networks)
-
-#### Monitorización (Dashboard)
-- Grafana + Prometheus para métricas en tiempo real
-- Alertas Telegram/Discord para trades
-- Reporte semanal de P&L
-
----
-
-## 📂 Estructura del Proyecto
-
-```
-trading_system/
-├── docker-compose.yml          # Configuración Docker TimescaleDB
-├── requirements.txt            # Dependencias Python
-├── .env                        # Variables de entorno (API keys)
-│
-├── scripts/
-│   ├── data_ingester.py       # Módulo 1: Recolector de datos
-│   ├── trading_engine.py      # Módulo 2: Motor de trading
-│   └── model_watcher.py       # Hot reload de modelos
-│
-├── notebooks/                  # Jupyter Notebooks para análisis
-│   ├── train_simple_model.ipynb
-│   └── backtest_strategy.ipynb
-│
-├── models/                     # Modelos ONNX exportados
-│   └── solana_model.onnx
-│
-├── data/                       # Datos locales (opcional)
-│   └── exports/
-│
-└── docs/                       # Documentación
-    ├── arquitectura.md
-    └── guia_rapida.md
-```
-
----
-
-## 🔧 Comandos Útiles
-
-### En Raspberry Pi:
-```bash
-# Reiniciar contenedor Docker
-docker-compose restart timescaledb
-
-# Ver logs de ingester
-tail -f trading_ingester.log
-
-# Detener todo
-docker-compose down
-
-# Backup de base de datos
-docker exec timescaledb pg_dump -U solana_user solana_trading > backup_$(date +%Y%m%d).sql
-```
-
-### En PC Escritorio:
-```bash
-# Conectar a DB remota
-psql -h 192.168.1.X -U solana_user -d solana_trading
-
-# Exportar datos a CSV
-python scripts/export_data.py --days 30 --output data/exports/trades_30d.csv
-```
-
----
-
-## 🎯 Próximos Pasos Inmediatos
-
-1. **HOY:** Formatear SSD M.2 e instalar Raspberry Pi OS en la Pi
-2. **MAÑANA:** Levantar TimescaleDB y ejecutar Data Ingester por 24h
-3. **SEMANA 1:** Conectar PC a DB, descargar datos, entrenar primer modelo
-4. **SEMANA 2:** Implementar Trading Engine con órdenes en papel
-5. **SEMANA 3+:** Modo Quant con análisis avanzado
-
----
-
-## 📊 Métricas de Éxito
-
-- ✅ Data Ingester: Recibe >100 trades/minuto sin lag
-- ✅ Modelo: Acuracidad >55% en backtesting (mejor que aleatorio)
-- ✅ Trading Engine: Latencia <100ms desde señal a orden
-- ✅ Sistema: Uptime 99.5% en producción
-
----
-
-## 🛠️ Troubleshooting
-
-**Problema:** Data Ingester se desconecta del WebSocket  
-**Solución:** Agregar reconnection logic con `asyncio.sleep(5)` antes de reconnectar
-
-**Problema:** DB llena de datos (TBs)  
-**Solución:** Implementar particionamiento por tiempo en TimescaleDB
-
-**Problema:** Modelo lento en Pi  
-**Solución:** Usar ONNX Runtime con optimización para CPU, reducir complejidad del modelo
-
----
-
-## 📞 Soporte y Recursos
-
-- [Documentación Hyperliquid API](https://hyperliquid.xyz/developers/api)
-- [TimescaleDB Docs](https://docs.timescale.com/)
-- [ONNX Runtime Guide](https://onnxruntime.ai/docs/)
-
-**¡Manos a la obra! 🚀**
+[MIT](LICENSE)

@@ -7,7 +7,7 @@ De la idea inicial al sistema actual. Para el estado de hoy y los resultados det
 
 ## 1. La idea inicial (septiembre 2026)
 
-Descrita en [`SUMARIO.md`](../SUMARIO.md) (se conserva como referencia):
+Descrita en [`legacy/SUMARIO.md`](../legacy/SUMARIO.md) (se conserva como referencia):
 
 ```
 Raspberry Pi 5 (24/7)                          PC (RTX 3060 + Ryzen 7 5700X3D)
@@ -23,9 +23,9 @@ Hoja de ruta en 4 fases: datos → primer modelo → paper trading → "modo qua
 
 ## 2. Lo que se hizo con Jupyter y ONNX
 
-1. **`notebooks/train_simple_model.ipynb`**: Random Forest con 3 features (RSI, SMA 20,
+1. **`legacy/notebooks/train_simple_model.ipynb`**: Random Forest con 3 features (RSI, SMA 20,
    volumen medio) para predecir si SOL sube en los siguientes ~5 minutos.
-2. **`scripts/train_enhanced_model_paper.ipynb`**: versión mejorada inspirada en el paper
+2. **`legacy/notebooks/train_enhanced_model_paper.ipynb`**: versión mejorada inspirada en el paper
    *"Rise of the Machines? Intraday High-Frequency Trading Patterns of Cryptocurrencies"*
    (Petukhina, Reule, Härdle): 8 features (RSI, SMA 20/50, volumen, hora, día de la semana,
    hora pico, ATR). Resultado: **91 % de accuracy**. Se exportó a `solana_model_v1.onnx`

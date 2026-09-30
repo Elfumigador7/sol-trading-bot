@@ -1,6 +1,6 @@
 # 🤖 Estado del bot SOL y plan de mejora
 
-> Actualizado: 2026-09-30. Sustituye a las partes obsoletas de `SUMARIO.md`
+> Actualizado: 2026-09-30. Sustituye a las partes obsoletas de `legacy/SUMARIO.md`
 > (que queda como referencia de la idea original: Pi 24/7 + PC para entrenar).
 
 ---
@@ -169,7 +169,7 @@ cat logs/train.log            # resultado de cada reentreno automático
 5. Con 4 h de datos: AUC 0,506 (azar) y −0,08 %/operación tras comisiones. **Sin datos suficientes no hay modelo, y el bot lo sabe y no opera.**
 6. A 5 minutos, las comisiones (0,09 % ida y vuelta + spread) se comen casi cualquier ventaja. Horizontes más largos (1 h – 1 día) lo ponen mucho más fácil.
 7. `send_order` antiguo no enviaba nada aunque decía "Orden enviada". Las órdenes reales en Hyperliquid requieren **firmar** la acción (SDK oficial `hyperliquid-python-sdk`). No implementar hasta que un modelo gane en paper durante semanas.
-8. `start_all.sh` / `stop_all.sh` / `hot_reload.py` quedan obsoletos (`stop_all.sh` además hace `docker-compose down` y apaga la DB).
+8. `legacy/start_all.sh` / `legacy/stop_all.sh` / `legacy/scripts/hot_reload.py` quedan obsoletos (`stop_all.sh` además hace `docker-compose down` y apaga la DB).
 
 ---
 
