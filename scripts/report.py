@@ -5,17 +5,21 @@
 Escribe reports/informe_actual.md (cron cada hora) y, los lunes, una copia en
 reports/semanal/informe_AAAA-MM-DD.md. `./bot.sh status` lo muestra.
 
-Ejecutar desde ~/1TRADING: python scripts/report.py
+Ejecutar desde ~/1TRADING: python scripts/report.py [--terminal]
 """
 
 import asyncio
 import json
 import os
+import re
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import asyncpg
 from dotenv import load_dotenv
+
+import performance
 
 load_dotenv()
 ROOT = Path(__file__).resolve().parent.parent
@@ -72,7 +76,7 @@ async def main():
             lines.append(f"- ✅ {name}: {ago(now - last)}")
     lines.insert(3, "**Todo funciona.**" if not problems else f"**⚠️ {problems} problema(s): revisar con `./bot.sh status` y los logs.**")
 
-    rows = await conn.fetch("SELECT account, day, seq, equity, weights, signals FROM trend_accounts "
+    rows = await conn.fetch("SELECT account, day, seq, run_time, equity, weights, prices, funding, signals FROM trend_accounts "
                             "ORDER BY account, day, seq")
     alerts = await conn.fetch("SELECT published, alerts, title FROM news_headlines WHERE alerts <> '' "
                               "AND published > now() - interval '7 days' ORDER BY published DESC") \
@@ -110,6 +114,11 @@ async def main():
         lines[3] = f"**⚠️ Alarma de degradación: {len(degraded)} cuenta(s) fuera de lo visto en el backtest.**"
         lines += ["", "## ⚠️ Alarmas de degradación", ""] + [f"- {d}" for d in degraded] + [
             "", "Qué hacer: no es motivo para cambiar nada de inmediato, pero sí para revisar (ver docs/ESTADO_BOT.md §0.1)."]
+    lines += ["", "## 💰 ¿Es rentable? (a precio actual; detalle con `./bot.sh rendimiento`)", ""]
+    try:  # que un fallo aquí no deje sin informe de salud
+        lines += performance.table_lines(performance.summarize(rows))
+    except Exception as e:
+        lines.append(f"- ❌ no se pudo calcular: {e}")
     lines += ["", "## 📰 Alertas de noticias (últimos 7 días)", ""]
     lines += [f"- {a['published']:%m-%d %H:%M} · **{a['alerts']}** · {a['title'][:110]}" for a in alerts] or ["- ninguna"]
     days = len({r['day'] for r in rows if r['account'] == 'buy_and_hold'})
@@ -122,7 +131,46 @@ async def main():
     if now.weekday() == 0:  # lunes
         (REPORTS / "semanal").mkdir(exist_ok=True)
         (REPORTS / "semanal" / f"informe_{now:%Y-%m-%d}.md").write_text(text)
-    print(text)
+    print(to_terminal(text) if '--terminal' in sys.argv else text)
+
+
+SHORT = {'Caída desde máximo': 'Caída', 'Peor caída': 'Peor', 'Días con cambios': 'Cambios',
+         'Posición actual': 'Posición', 'Backtest (Sharpe · peor caída)': 'Backtest SR·DD',
+         'Capital ahora': 'Capital', 'vs buy & hold': 'vs B&H', 'Días en verde': 'Días +',
+         'Operaciones (cerradas + abiertas)': 'Ops (c+a)', 'Ganado/perdido': 'Gan/perd'}
+
+
+def to_terminal(md: str) -> str:
+    """Markdown → texto legible en terminal: tablas alineadas, títulos en negrita, sin ** ni `."""
+    bold, dim, off = ('\033[1m', '\033[2m', '\033[0m') if sys.stdout.isatty() else ('', '', '')
+    out, table = [], []
+
+    def flush():
+        if not table:
+            return
+        rows = [[c.strip() for c in r.strip('|').split('|')] for r in table if not set(r) <= set('|-')]
+        rows[0] = [SHORT.get(c, c) for c in rows[0]]
+        rows = [[c if len(c) <= 28 else c[:27] + '…' for c in r] for r in rows]
+        widths = [max(len(r[i]) for r in rows) for i in range(len(rows[0]))]
+        for n, r in enumerate(rows):
+            line = '  '.join(c.ljust(w) if i in (0, len(r) - 2, len(r) - 1) else c.rjust(w)
+                             for i, (c, w) in enumerate(zip(r, widths))).rstrip()
+            out.append(f"{bold}{line}{off}" if n == 0 else line)
+        table.clear()
+
+    for line in md.splitlines():
+        if line.startswith('|'):
+            table.append(line)
+            continue
+        flush()
+        line = re.sub(r'\*\*(.+?)\*\*', rf'{bold}\1{off}', line).replace('`', '')
+        if line.startswith('#'):
+            line = f"{bold}{line.lstrip('#').strip()}{off}"
+        elif line.startswith('Días en paper'):
+            line = f"{dim}{line}{off}"
+        out.append(line)
+    flush()
+    return '\n'.join(out)
 
 
 if __name__ == '__main__':

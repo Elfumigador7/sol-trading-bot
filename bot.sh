@@ -1,5 +1,5 @@
 #!/bin/bash
-# 🤖 Control del bot: ./bot.sh start | stop | restart | status | retrain (modelo antiguo de 5 min)
+# 🤖 Control del bot: ./bot.sh start | stop | restart | status | rendimiento | retrain (modelo antiguo de 5 min)
 # "start" es idempotente: solo arranca lo que no esté corriendo (sirve como watchdog en cron).
 
 cd "$(dirname "$0")" || exit 1
@@ -31,7 +31,8 @@ status() {
         if is_running "$s"; then echo "✅ $s: corriendo"; else echo "❌ $s: parado"; fi
     done
     echo "📊 Panel: http://$(hostname -I | awk '{print $1}'):8899/panel.html"
-    venv/bin/python scripts/report.py 2>/dev/null | sed -n '3,$p'
+    echo
+    $PY scripts/report.py --terminal 2>/dev/null | sed -n '3,$p'
 }
 
 case "$1" in
@@ -39,6 +40,7 @@ case "$1" in
     stop) stop ;;
     restart) stop; sleep 2; start ;;
     status) status ;;
+    rendimiento) $PY scripts/performance.py --terminal ;;
     retrain) echo "=== $(date -u '+%F %T') UTC ==="; $PY scripts/train_model.py 2>&1 | grep -v Warning ;;
-    *) echo "Uso: $0 start|stop|restart|status|retrain"; exit 1 ;;
+    *) echo "Uso: $0 start|stop|restart|status|rendimiento|retrain"; exit 1 ;;
 esac
