@@ -9,6 +9,7 @@ de noticias, estado del mercado en Hyperliquid y del autoentrenamiento mensual.
 
 import asyncio
 import json
+import math
 import os
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,6 +17,7 @@ from pathlib import Path
 import asyncpg
 from dotenv import load_dotenv
 
+import performance  # rendimiento real (operaciones, aciertos, veredicto)
 import report  # salud, límites de alarma y referencias del backtest (una sola fuente)
 
 load_dotenv()
@@ -47,7 +49,8 @@ async def collect() -> dict:
         ok = last is not None and now - last <= max_delay
         health.append({'name': name, 'ok': ok, 'ago': report.ago(now - last) if last else 'sin datos'})
 
-    rows = await conn.fetch("SELECT account, day, seq, equity, weights, signals FROM trend_accounts ORDER BY day, seq")
+    rows = await conn.fetch("SELECT account, day, seq, run_time, equity, weights, prices, funding, signals "
+                            "FROM trend_accounts ORDER BY day, seq")
     days = sorted({str(r['day']) for r in rows})
     series, table = {}, []
     for acc in dict.fromkeys(r['account'] for r in rows):
@@ -80,6 +83,21 @@ async def collect() -> dict:
             'emergencies': sum(1 for r in hist if r['seq'] > 0),
         })
     table.sort(key=lambda t: -t['equity'])
+    profit = []
+    try:
+        for acc, m in performance.summarize(rows).items():
+            profit.append({
+                'account': acc, 'label': LABELS.get(acc, acc), 'capital': m['capital'], 'ret': m['retorno'],
+                'vs_bench': m['vs_bench'], 'days': m['dias'], 'green': m['dias_verdes'],
+                'closed': [{'coin': t['coin'], 'from': f"{t['entrada']:%m-%d}", 'to': f"{t['salida']:%m-%d}",
+                            'ret': t['ret']} for t in m['cerradas']],
+                'open': [{'coin': t['coin'], 'ret': t['ret']} for t in sorted(m['abiertas'], key=lambda t: -t['ret'])],
+                'hit': m['aciertos'], 'factor': None if m['factor'] in (None, math.inf) else m['factor'],
+                'factor_inf': m['factor'] == math.inf, 'sharpe': m['sharpe'], 'verdict': m['veredicto'],
+            })
+        profit.sort(key=lambda t: -t['capital'])
+    except Exception as e:
+        profit = {'error': str(e)}
 
     news_daily, alerts, snapshot = [], [], []
     if await conn.fetchval("SELECT to_regclass('news_headlines') IS NOT NULL"):
@@ -116,7 +134,7 @@ async def collect() -> dict:
         'reports': sorted(p.name for p in (ROOT / 'reports').glob('investigacion_*.md')),
     }
     return {'generated': f"{now:%Y-%m-%d %H:%M} UTC", 'health': health, 'days': days, 'series': series,
-            'table': table, 'news': news_daily, 'alerts': alerts, 'macro': macro, 'market': snapshot, 'research': research,
+            'table': table, 'profit': profit, 'news': news_daily, 'alerts': alerts, 'macro': macro, 'market': snapshot, 'research': research,
             'order': ACCOUNT_ORDER, 'light': LIGHT, 'dark': DARK, 'labels': LABELS}
 
 
@@ -192,6 +210,13 @@ a { color: inherit; }
   <section class="card">
     <h2>Cuentas</h2>
     <div class="scroll"><table id="accounts"></table></div>
+  </section>
+
+  <section class="card">
+    <h2>¿Es rentable?</h2>
+    <p class="sub">Capital a precio actual, con comisiones y funding. Operación = de la entrada a la salida de una moneda.
+      El veredicto necesita ≥ 30 días; aun rindiendo como en el backtest, confirmarlo con 95 % de confianza lleva 2-4 años.</p>
+    <div class="scroll"><table id="profit"></table></div>
   </section>
 
   <div class="grid2">
@@ -284,6 +309,21 @@ document.getElementById('accounts').innerHTML =
     <td class="num">${pct(t.dd)}</td><td class="num">${pct(t.worst)}</td><td class="num">${t.limit == null ? '—' : pct(t.limit, 0)}</td>
     <td>${Object.entries(t.held).map(([c, w]) => `${c} ${(w * 100).toFixed(0)}%`).join(', ') || 'liquidez'}</td>
     <td class="num">${bt(t)}</td></tr>`).join('');
+
+const P = D.profit;
+document.getElementById('profit').innerHTML = P.error ? `<tr><td class="bad">No se pudo calcular: ${esc(P.error)}</td></tr>` :
+  `<tr><th>Cuenta</th><th class="num">Capital ahora</th><th class="num">Retorno</th><th class="num">vs buy &amp; hold</th>
+   <th class="num">Días en verde</th><th class="num">Aciertos</th><th class="num">Ganado/perdido</th><th class="num">Sharpe</th>
+   <th>¿Rentable?</th><th>Operaciones</th></tr>` +
+  P.map(t => `<tr><td><span class="sw" style="background:${color(t.account)}"></span>${esc(t.label)}</td>
+    <td class="num">${usd(t.capital)}</td><td class="num ${tone(t.ret)}">${pct(t.ret)}</td>
+    <td class="num ${t.vs_bench == null ? '' : tone(t.vs_bench)}">${pct(t.vs_bench)}</td>
+    <td class="num">${t.green}/${t.days}</td>
+    <td class="num">${t.hit == null ? '—' : (t.hit * 100).toFixed(0) + ' %'} <span class="muted">(${t.closed.length})</span></td>
+    <td class="num">${t.factor_inf ? '∞' : t.factor == null ? '—' : t.factor.toFixed(2)}</td>
+    <td class="num">${t.sharpe == null ? '—' : t.sharpe.toFixed(2)}</td><td>${esc(t.verdict)}</td>
+    <td class="muted">${[...t.closed.map(o => `${o.coin} ${o.from}→${o.to} <span class="${tone(o.ret)}">${pct(o.ret)}</span>`),
+      ...t.open.map(o => `${o.coin} abierta <span class="${tone(o.ret)}">${pct(o.ret)}</span>`)].join(', ') || '—'}</td></tr>`).join('');
 
 new Chart(document.getElementById('sentiment'), {type: 'line',
   data: {labels: D.news.map(n => n.day), datasets: [{label: 'Sentimiento medio', data: D.news.map(n => n.sent),

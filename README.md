@@ -146,7 +146,8 @@ docker-compose up -d               # PostgreSQL / TimescaleDB
 python -m venv venv && venv/bin/pip install -r requirements.txt
 ./bot.sh start                     # data ingester (watchdog via cron)
 venv/bin/python scripts/trend_engine.py --force   # first paper-trading run
-./bot.sh status                    # health + accounts
+./bot.sh status                    # health + accounts + "is it profitable?"
+./bot.sh rendimiento               # live performance: trades, hit rate, vs buy & hold, verdict
 
 # Research (downloads history on first run)
 cd research && python run_lab.py && python run_ml.py && python make_figures.py
