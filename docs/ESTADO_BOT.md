@@ -131,7 +131,7 @@ alertas de noticias, mercado en Hyperliquid y estado del autoentrenamiento. El p
 **Cada semana (opcional, 1 min):** abrir el panel (`http://192.168.1.94:8899/panel.html`) o `./bot.sh status` → que todo esté en ✅.
 
 **Al mes (~2026-10-30): revisión técnica, NO de rentabilidad**
-1. `./bot.sh status`: todas las piezas en ✅ y ~30 días en la tabla de cuentas.
+1. `./bot.sh status`: todas las piezas en ✅ y ~30 días en la tabla de cuentas. `./bot.sh rendimiento`: primeras operaciones cerradas y veredicto (el primero con ≥ 30 días).
 2. `ls reports/semanal/`: debe haber ~4 informes.
 3. Mirar la columna "Peor caída" de cada cuenta: dentro de lo visto en el backtest (≤ ~50 %).
 4. La rentabilidad de 1 mes es ruido: no cambiar nada por ella (ni para bien ni para mal).
@@ -162,23 +162,26 @@ con una cantidad pequeña.
 | Recolector | `scripts/data_ingester.py` | Guarda cada trade de SOL de Hyperliquid en `solana_trades` (hora real del trade, sin duplicados por `trade_id`, pool de conexiones). |
 | Conexión WS | `scripts/ws_utils.py` | Heartbeat cada 30 s + reconexión automática. Hyperliquid corta ("Expired") si no envías nada en 60 s: por eso el ingester llevaba horas muerto. |
 | Features | `scripts/features.py` | Única fuente de features para entrenamiento **y** motor. Todas relativas (no dependen del nivel de precio). |
-| Entrenamiento | `scripts/train_model.py` | Target "¿sube más que las comisiones en 5 min?", validación walk-forward purgada, **solo despliega si el retorno neto simulado es > 0** con ≥ 30 operaciones. |
-| Motor | `scripts/trading_engine.py` | Paper trading: 1 posición, SL 0,5 %, TP 1 %, salida a 5 min, cooldown 60 s, fills al bid/ask + comisiones 0,045 %/lado. Recarga el modelo solo. Rechaza modelos cuyas features no coinciden. **Nunca envía órdenes reales.** |
+| Entrenamiento (retirado) | `scripts/train_model.py` | Del bot de 5 min. Target "¿sube más que las comisiones en 5 min?", validación walk-forward purgada, **solo despliega si el retorno neto simulado es > 0** con ≥ 30 operaciones. |
+| Motor de 5 min (retirado 2026-09-30) | `scripts/trading_engine.py` | Ya no se arranca. Paper trading: 1 posición, SL 0,5 %, TP 1 %, salida a 5 min, cooldown 60 s, fills al bid/ask + comisiones 0,045 %/lado. Recarga el modelo solo. Rechaza modelos cuyas features no coinciden. **Nunca envía órdenes reales.** |
 | Noticias | `scripts/news_collector.py` | Cron cada 15 min: 10 fuentes RSS/Atom (CoinDesk, Cointelegraph, Decrypt, The Block, Bitcoin Magazine, CryptoSlate, CryptoPotato, Blockworks, Solana News, Reddit r/solana) → `news_headlines` con monedas mencionadas. Para puntuar sentimiento más adelante (FinBERT en el PC). |
 | Fotos de mercado | `scripts/market_snapshots.py` | Cron cada 5 min, 11 monedas en Hyperliquid: open interest, funding, prima, precios (`hl_snapshots`) y spread + profundidad del libro a ±0,1/0,5/1 % (`hl_book`). Hyperliquid no ofrece este histórico: solo existe si lo guardamos. |
 | Tendencia (paper) | `scripts/trend_engine.py` | Ver sección 0. |
-| Informe | `scripts/report.py` | Cron cada hora → `reports/informe_actual.md` (salud de cada recolector + tabla de cuentas); los lunes copia en `reports/semanal/`. Lo muestra `./bot.sh status`. |
+| Informe | `scripts/report.py` | Cron cada hora → `reports/informe_actual.md` (salud de cada recolector + tabla de cuentas + "¿Es rentable?"); los lunes copia en `reports/semanal/`. Lo muestra `./bot.sh status` con tablas alineadas (`--terminal`). |
+| Rendimiento real | `scripts/performance.py` | Capital a precio actual, operaciones entrada→salida (aciertos, ganado/perdido), Sharpe, comparación con buy & hold y veredicto de rentabilidad (t-estadístico, ≥ 30 días). `./bot.sh rendimiento`. |
 | Copias | `scripts/backup.sh` | Cron diario 03:30: `pg_dump` comprimido en `backups/`, últimos 14 días. Copiar de vez en cuando al PC (protege de un fallo del disco). |
 | Logs | `logrotate.conf` | Cron diario 04:00: rotación semanal, 4 semanas, comprimidos. |
 | Panel | `scripts/panel.py` + `panel_server.py` | Panel web en el puerto 8899 (ver sección 0). |
 | Investigación mensual | `scripts/monthly_research.py` | Autoentrenamiento con barrera (ver sección 0). |
 | Reglas de noticias | `scripts/news_rules.py` | Etiquetado de monedas, alertas y sentimiento (compartido por recolector, motor y panel). |
-| Control | `bot.sh` | `./bot.sh start | stop | restart | status | retrain` |
-| Cron | `crontab -l` | Arranque al encender, watchdog cada 5 min, reentreno cada 6 h (log en `logs/train.log`). Quitar: `crontab -r`. |
+| Control | `bot.sh` | `./bot.sh start | stop | restart | status | rendimiento | retrain` |
+| Cron | `crontab -l` | Arranque al encender, watchdog cada 5 min, tendencia cada hora, noticias, fotos de mercado, informe, panel, copias e investigación mensual (el reentreno cada 6 h se quitó con el bot de 5 min). Quitar: `crontab -r`. |
 
 ### Tablas en PostgreSQL (`solana_trading`, contenedor Docker `solana_trading_db`)
 - `solana_trades`: trades de mercado (materia prima del modelo).
-- `paper_trades`: operaciones simuladas del bot (entrada, salida, prob., motivo, PnL).
+- `trend_accounts`: una fila por cuenta y revisión (capital, pesos, precios, funding). Es la fuente del rendimiento real.
+- `news_headlines`, `hl_snapshots`, `hl_book`: noticias y fotos de mercado.
+- `paper_trades`: del bot de 5 min retirado (vacía: nunca llegó a operar, no había modelo desplegado).
 - `executed_trades`: tabla antigua, sin uso.
 
 ### Parámetros (en `.env`, todos opcionales)
@@ -186,9 +189,10 @@ con una cantidad pequeña.
 
 ### Comandos del día a día
 ```bash
-./bot.sh status               # servicios + último estado + modelo
-tail -f logs/engine.log       # motor en directo
-cat logs/train.log            # resultado de cada reentreno automático
+./bot.sh status               # servicios, salud, cuentas y ¿es rentable?
+./bot.sh rendimiento          # detalle: operaciones de cada cuenta y cómo leerlo
+tail logs/trend.log           # revisiones diarias de la tendencia
+cat reports/investigacion_*.md  # autoentrenamiento mensual
 ```
 
 ---
@@ -206,19 +210,26 @@ cat logs/train.log            # resultado de cada reentreno automático
 
 ---
 
-## 3. ¿Puede autoentrenarse con sus propias operaciones?
+## 3. ¿Puede autoentrenarse con sus propias operaciones? (actualizado 2026-09-30)
 
-**Sí, pero no como fuente principal.** Las operaciones del bot son pocas (decenas al mes) y
-están sesgadas (solo existen donde el modelo ya quiso entrar). Lo correcto es:
+**Se autoentrena con datos de mercado, no con sus operaciones.** Las operaciones propias se usan
+para vigilar, no para entrenar.
 
-1. **Reentreno con datos de mercado** (ya funciona: cada 6 h con todo `solana_trades`).
-2. **Control de degradación con `paper_trades`**: comparar el acierto y PnL reales con lo
-   que prometió la validación (`models/model_metadata.json`). Si el real cae claramente por
-   debajo durante N operaciones → el bot se pausa solo. *(Pendiente de implementar.)*
-3. **Meta-labeling** (López de Prado, *Advances in Financial Machine Learning*): cuando haya
-   cientos de operaciones, un segundo modelo aprende **cuándo fiarse** de las señales del
-   primero usando `paper_trades` como etiquetas. Es la forma sana de "aprender de sus
-   propias operaciones". *(Pendiente, necesita volumen de operaciones.)*
+1. **Autoentrenamiento mensual** (`scripts/monthly_research.py`, ver sección 0): reentrena el retador
+   (meta-labeling sobre la rotación) con todo el historial de las 11 monedas y lo activa en paper solo
+   si pasa la barrera. Sept-2026: ninguno pasó (mejor Sharpe total y menos caída, pero peor en 2023-hoy).
+2. **Por qué no con sus operaciones:** son pocas (26-150 cambios al año por cuenta) y sesgadas (solo
+   existen donde la regla ya entró). Un modelo entrenado con decenas de ejemplos aprende ruido. Los
+   datos de mercado contienen miles de situaciones, incluidas las que el bot no operó.
+3. **Vigilancia con las operaciones reales (ya funciona):**
+   - Alarma de degradación en el informe: caída mayor que la peor del backtest.
+   - Investigación mensual: paper vs backtest de los mismos días (si difieren, algo falla en vivo).
+   - `./bot.sh rendimiento`: aciertos y ganado/perdido de las operaciones, comparación con buy & hold y
+     veredicto estadístico. Aun rindiendo como en el backtest, confirmar rentabilidad con 95 % de
+     confianza lleva ~2-4 años (714-1.432 días según la cuenta); antes, lo útil es comprobar que
+     nada se sale de lo esperado.
+4. **Más adelante:** con cientos de operaciones en `trend_accounts` (años), usarlas como etiquetas
+   del meta-labeling (López de Prado, *Advances in Financial Machine Learning*).
 
 ---
 
